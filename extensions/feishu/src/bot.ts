@@ -30,7 +30,8 @@ import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } from "./types.js";
-import type { DynamicAgentCreationConfig } from "./types.js";
+import type { DynamicAgentCreationConfig, UserBotRegistrationConfig } from "./types.js";
+import { registerUserBot } from "./user-bot-registration.js";
 
 // --- Permission error extraction ---
 // Extract permission grant URL from Feishu API error response.
@@ -858,6 +859,87 @@ export function buildFeishuAgentBody(params: {
   return messageBody;
 }
 
+const REGISTER_BOT_COMMAND = "/register-bot";
+
+/**
+ * Attempt to handle a `/register-bot <appId> <appSecret> [adminSecret]` DM command.
+ * Returns true if the command was handled (the caller should stop further processing).
+ */
+async function maybeHandleRegisterBotCommand(params: {
+  content: string;
+  regCfg: UserBotRegistrationConfig;
+  cfg: ClawdbotConfig;
+  account: ResolvedFeishuAccount;
+  chatId: string;
+  log: (msg: string) => void;
+}): Promise<boolean> {
+  const { content, regCfg, cfg, account, chatId, log } = params;
+  const trimmed = content.trim();
+  if (!trimmed.toLowerCase().startsWith(REGISTER_BOT_COMMAND)) {
+    return false;
+  }
+
+  const parts = trimmed.slice(REGISTER_BOT_COMMAND.length).trim().split(/\s+/);
+  const appId = parts[0]?.trim();
+  const appSecret = parts[1]?.trim();
+  const providedAdminSecret = parts[2]?.trim();
+
+  const replyError = async (text: string) => {
+    try {
+      await sendMessageFeishu({ cfg, to: `chat:${chatId}`, text, accountId: account.accountId });
+    } catch (err) {
+      log(`feishu[${account.accountId}]: failed to send register-bot error reply: ${String(err)}`);
+    }
+  };
+
+  if (!appId || !appSecret) {
+    await replyError(
+      "Usage: /register-bot <app_id> <app_secret>\nExample: /register-bot cli_a1b2c3d4e5f6 yourAppSecret",
+    );
+    return true;
+  }
+
+  // Verify optional admin secret.
+  const requiredSecret = regCfg.adminSecret?.trim();
+  if (requiredSecret && providedAdminSecret !== requiredSecret) {
+    await replyError("Registration failed: invalid admin secret.");
+    return true;
+  }
+
+  log(`feishu[${account.accountId}]: processing /register-bot for app_id=${appId}`);
+
+  try {
+    const runtime = getFeishuRuntime();
+    const result = await registerUserBot({
+      cfg: cfg as import("openclaw/plugin-sdk/feishu").OpenClawConfig,
+      runtime,
+      appId,
+      appSecret,
+      autoCreateAgent: regCfg.autoCreateAgent ?? true,
+      workspaceTemplate: regCfg.workspaceTemplate,
+      agentDirTemplate: regCfg.agentDirTemplate,
+    });
+
+    const agentNote = result.agentCreated
+      ? "\nA dedicated workspace has been created. Restart the gateway to activate your bot."
+      : "\nYour bot account was already registered.";
+    const botLabel = result.appName ? ` (${result.appName})` : "";
+    await sendMessageFeishu({
+      cfg,
+      to: `chat:${chatId}`,
+      text: `✅ Bot registered successfully!${botLabel}\nAccount ID: ${result.accountId}${agentNote}`,
+      accountId: account.accountId,
+    });
+    log(`feishu[${account.accountId}]: registered bot account=${result.accountId}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await replyError(`Registration failed: ${message}`);
+    log(`feishu[${account.accountId}]: /register-bot error: ${message}`);
+  }
+
+  return true;
+}
+
 export async function handleFeishuMessage(params: {
   cfg: ClawdbotConfig;
   event: FeishuMessageEvent;
@@ -1174,6 +1256,25 @@ export async function handleFeishuMessage(params: {
       },
       parentPeer,
     });
+
+    // Self-service bot registration command (/register-bot <appId> <appSecret> [adminSecret])
+    // Intercept before AI routing so credentials are never forwarded to the agent.
+    if (!isGroup) {
+      const regCfg = feishuCfg?.userBotRegistration as UserBotRegistrationConfig | undefined;
+      if (regCfg?.enabled) {
+        const handled = await maybeHandleRegisterBotCommand({
+          content: ctx.content,
+          regCfg,
+          cfg,
+          account,
+          chatId: ctx.chatId,
+          log,
+        });
+        if (handled) {
+          return;
+        }
+      }
+    }
 
     // Dynamic agent creation for DM users
     // When enabled, creates a unique agent instance with its own workspace for each DM user.

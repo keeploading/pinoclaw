@@ -87,3 +87,11 @@ export type DynamicAgentCreationConfig = {
   agentDirTemplate?: string;
   maxAgents?: number;
 };
+
+export type UserBotRegistrationConfig = {
+  enabled?: boolean;
+  adminSecret?: string;
+  autoCreateAgent?: boolean;
+  workspaceTemplate?: string;
+  agentDirTemplate?: string;
+};

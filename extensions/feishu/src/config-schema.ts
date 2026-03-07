@@ -77,6 +77,36 @@ const DynamicAgentCreationSchema = z
   .optional();
 
 /**
+ * Per-user Feishu bot registration configuration.
+ * When enabled, users can DM the admin bot with `/register-bot <appId> <appSecret>`
+ * to self-register their own Feishu bot and get a dedicated agent workspace.
+ */
+const UserBotRegistrationSchema = z
+  .object({
+    /**
+     * Enable the self-service bot registration command.
+     * Users DM the admin bot: `/register-bot <appId> <appSecret>`
+     */
+    enabled: z.boolean().optional(),
+    /**
+     * Optional shared secret users must append: `/register-bot <appId> <appSecret> <adminSecret>`
+     * Prevents unauthorised registrations when dmPolicy is "open".
+     */
+    adminSecret: z.string().optional(),
+    /**
+     * Automatically create a dedicated agent + binding per registered bot.
+     * Default: true.
+     */
+    autoCreateAgent: z.boolean().optional(),
+    /** Template for the agent workspace directory. Supports `{accountId}`. */
+    workspaceTemplate: z.string().optional(),
+    /** Template for the agent dir. Supports `{accountId}`. */
+    agentDirTemplate: z.string().optional(),
+  })
+  .strict()
+  .optional();
+
+/**
  * Feishu tools configuration.
  * Controls which tool categories are enabled.
  *
@@ -218,6 +248,8 @@ export const FeishuConfigSchema = z
     topicSessionMode: TopicSessionModeSchema,
     // Dynamic agent creation for DM users
     dynamicAgentCreation: DynamicAgentCreationSchema,
+    // Self-service bot registration
+    userBotRegistration: UserBotRegistrationSchema,
     // Optimization flags
     typingIndicator: z.boolean().optional().default(true),
     resolveSenderNames: z.boolean().optional().default(true),
