@@ -187,6 +187,17 @@ const QIANFAN_DEFAULT_COST = {
   cacheWrite: 0,
 };
 
+const NIO_GATEWAY_BASE_URL = "https://modelgateway.nioint.com/publicService";
+const NIO_GATEWAY_DEFAULT_MODEL_ID = "DeepSeek-V3.2";
+const NIO_GATEWAY_DEFAULT_CONTEXT_WINDOW = 128000;
+const NIO_GATEWAY_DEFAULT_MAX_TOKENS = 8192;
+const NIO_GATEWAY_DEFAULT_COST = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_DEFAULT_MODEL_ID = "nvidia/llama-3.1-nemotron-70b-instruct";
 const NVIDIA_DEFAULT_CONTEXT_WINDOW = 131072;
@@ -920,6 +931,24 @@ export function buildKilocodeProvider(): ProviderConfig {
   };
 }
 
+export function buildNioGatewayProvider(): ProviderConfig {
+  return {
+    baseUrl: NIO_GATEWAY_BASE_URL,
+    api: "openai-completions",
+    models: [
+      {
+        id: NIO_GATEWAY_DEFAULT_MODEL_ID,
+        name: "DeepSeek V3.2 (NIO Gateway)",
+        reasoning: false,
+        input: ["text"],
+        cost: NIO_GATEWAY_DEFAULT_COST,
+        contextWindow: NIO_GATEWAY_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: NIO_GATEWAY_DEFAULT_MAX_TOKENS,
+      },
+    ],
+  };
+}
+
 export async function resolveImplicitProviders(params: {
   agentDir: string;
   explicitProviders?: Record<string, ProviderConfig> | null;
@@ -1134,6 +1163,13 @@ export async function resolveImplicitProviders(params: {
     resolveApiKeyFromProfiles({ provider: "kilocode", store: authStore });
   if (kilocodeKey) {
     providers.kilocode = { ...buildKilocodeProvider(), apiKey: kilocodeKey };
+  }
+
+  const nioGatewayKey =
+    resolveEnvApiKeyVarName("nio-gateway") ??
+    resolveApiKeyFromProfiles({ provider: "nio-gateway", store: authStore });
+  if (nioGatewayKey) {
+    providers["nio-gateway"] = { ...buildNioGatewayProvider(), apiKey: nioGatewayKey };
   }
 
   return providers;
