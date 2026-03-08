@@ -87,6 +87,57 @@ extension ChannelsSettings {
         }
     }
 
+    var feishuSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            self.feishuBotAccountsSection
+            self.configEditorSection(channelId: "feishu")
+        }
+    }
+
+    @ViewBuilder
+    private var feishuBotAccountsSection: some View {
+        let accounts = self.store.snapshot?.channelAccounts["feishu"] ?? []
+        if !accounts.isEmpty {
+            self.formSection("Bot Accounts") {
+                ForEach(accounts, id: \.accountId) { account in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(self.feishuAccountStatusColor(account))
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.name ?? account.accountId)
+                                .font(.callout)
+                            if let err = account.lastError, !err.isEmpty {
+                                Text(err).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                            } else if let mode = account.mode {
+                                Text(mode).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Text(self.feishuAccountStatusLabel(account))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private func feishuAccountStatusColor(_ account: ChannelsStatusSnapshot.ChannelAccountSnapshot) -> Color {
+        if account.lastError?.isEmpty == false { return .orange }
+        if account.connected == true { return Color(red: 0.20, green: 0.44, blue: 1.00) }
+        if account.running == true { return .green }
+        return .secondary
+    }
+
+    private func feishuAccountStatusLabel(_ account: ChannelsStatusSnapshot.ChannelAccountSnapshot) -> String {
+        if account.lastError?.isEmpty == false { return "Error" }
+        if account.connected == true { return "Connected" }
+        if account.running == true { return "Running" }
+        if account.configured == true { return "Idle" }
+        return "Off"
+    }
+
     func genericChannelSection(_ channel: ChannelItem) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             self.configEditorSection(channelId: channel.id)

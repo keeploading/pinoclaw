@@ -331,7 +331,7 @@ extension ChannelsSettings {
     }
 
     var orderedChannels: [ChannelItem] {
-        let fallback = ["whatsapp", "telegram", "discord", "googlechat", "slack", "signal", "imessage"]
+        let fallback = ["whatsapp", "telegram", "discord", "googlechat", "slack", "signal", "imessage", "feishu"]
         let order = self.store.snapshot?.channelOrder ?? fallback
         let channels = order.enumerated().map { index, id in
             ChannelItem(
@@ -381,10 +381,15 @@ extension ChannelsSettings {
     func channelSection(_ channel: ChannelItem) -> some View {
         if channel.id == "whatsapp" {
             self.whatsAppSection
+        } else if channel.id == "feishu" {
+            self.feishuSection
         } else {
             self.genericChannelSection(channel)
         }
     }
+
+    // Feishu brand colour — matches the official Feishu/Lark primary blue (#3370FF).
+    var feishuTint: Color { Color(red: 0.20, green: 0.44, blue: 1.00) }
 
     func channelTint(_ channel: ChannelItem) -> Color {
         switch channel.id {
@@ -400,6 +405,8 @@ extension ChannelsSettings {
             return self.signalTint
         case "imessage":
             return self.imessageTint
+        case "feishu":
+            return self.feishuTint
         default:
             if self.channelHasError(channel) { return .orange }
             if self.channelEnabled(channel) { return .green }
@@ -421,6 +428,8 @@ extension ChannelsSettings {
             return self.signalSummary
         case "imessage":
             return self.imessageSummary
+        case "feishu":
+            return self.feishuSummary
         default:
             if self.channelHasError(channel) { return "Error" }
             if self.channelEnabled(channel) { return "Active" }
@@ -442,6 +451,8 @@ extension ChannelsSettings {
             return self.signalDetails
         case "imessage":
             return self.imessageDetails
+        case "feishu":
+            return self.feishuDetails
         default:
             let status = self.channelStatusDictionary(channel.id)
             if let err = status?["lastError"]?.stringValue, !err.isEmpty {
@@ -449,6 +460,42 @@ extension ChannelsSettings {
             }
             return nil
         }
+    }
+
+    // MARK: - Feishu status helpers
+
+    private var feishuStatusDictionary: [String: AnyCodable]? {
+        self.channelStatusDictionary("feishu")
+    }
+
+    var feishuSummary: String {
+        let accounts = self.store.snapshot?.channelAccounts["feishu"] ?? []
+        let active = accounts.filter { $0.running == true || $0.connected == true }
+        if !active.isEmpty {
+            return active.count == 1 ? "1 bot active" : "\(active.count) bots active"
+        }
+        let configured = accounts.filter { $0.configured == true }
+        if !configured.isEmpty {
+            return configured.count == 1 ? "1 bot configured" : "\(configured.count) bots configured"
+        }
+        let status = self.feishuStatusDictionary
+        if let err = status?["lastError"]?.stringValue, !err.isEmpty { return "Error" }
+        if status?["running"]?.boolValue == true { return "Running" }
+        if status?["configured"]?.boolValue == true { return "Configured" }
+        return "Not configured"
+    }
+
+    var feishuDetails: String? {
+        let accounts = self.store.snapshot?.channelAccounts["feishu"] ?? []
+        if !accounts.isEmpty {
+            let names = accounts.compactMap { $0.name ?? $0.id }.prefix(3)
+            return names.joined(separator: ", ")
+        }
+        let status = self.feishuStatusDictionary
+        if let err = status?["lastError"]?.stringValue, !err.isEmpty {
+            return "Error: \(err)"
+        }
+        return nil
     }
 
     func channelLastCheckText(_ channel: ChannelItem) -> String {
