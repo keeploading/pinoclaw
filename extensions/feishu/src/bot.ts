@@ -19,6 +19,7 @@ import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
 import { downloadMessageResourceFeishu } from "./media.js";
 import { extractMentionTargets, isMentionForwardRequest } from "./mention.js";
+import { createOAuthPendingState, buildFeishuOAuthUrl } from "./oauth-flow.js";
 import {
   resolveFeishuGroupConfig,
   resolveFeishuReplyPolicy,
@@ -30,8 +31,13 @@ import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } from "./types.js";
-import type { DynamicAgentCreationConfig, UserBotRegistrationConfig } from "./types.js";
+import type {
+  DynamicAgentCreationConfig,
+  FeishuOAuthConfig,
+  UserBotRegistrationConfig,
+} from "./types.js";
 import { registerUserBot } from "./user-bot-registration.js";
+import { loadUserOAuthToken, isUserOAuthTokenValid } from "./user-oauth-store.js";
 
 // --- Permission error extraction ---
 // Extract permission grant URL from Feishu API error response.
@@ -859,6 +865,99 @@ export function buildFeishuAgentBody(params: {
   return messageBody;
 }
 
+// ── Feishu OAuth auth gate ────────────────────────────────────────────────────
+
+const OAUTH_STATE_DIR_SUFFIX = "/credentials";
+const DEFAULT_OAUTH_CALLBACK_PORT = 3001;
+const DEFAULT_OAUTH_TOKEN_EXPIRY_DAYS = 30;
+
+/**
+ * Derive the credentials directory from the state dir (e.g. ~/.openclaw → ~/.openclaw/credentials).
+ */
+function resolveCredentialsDir(stateDir: string): string {
+  return `${stateDir}${OAUTH_STATE_DIR_SUFFIX}`;
+}
+
+/**
+ * Check whether a DM sender has a valid Feishu OAuth device binding.
+ * If not, send them an auth link and return true (message handled; caller should return early).
+ */
+async function maybeRequireOAuthAuth(params: {
+  oauthCfg: FeishuOAuthConfig;
+  cfg: ClawdbotConfig;
+  account: ResolvedFeishuAccount;
+  ctx: FeishuMessageContext;
+  log: (...args: unknown[]) => void;
+}): Promise<boolean> {
+  const { oauthCfg, cfg, account, ctx, log } = params;
+  if (!oauthCfg.enabled) return false;
+  if (!account.appId || !account.configured) return false;
+
+  const runtime = getFeishuRuntime();
+  const stateDir = runtime.state.resolveStateDir();
+  const credentialsDir = resolveCredentialsDir(stateDir);
+
+  // Check existing device binding.
+  const existingToken = await loadUserOAuthToken(credentialsDir, ctx.senderOpenId);
+  if (existingToken && isUserOAuthTokenValid(existingToken)) {
+    // Token valid — honour requireTenant if configured.
+    if (oauthCfg.requireTenant && existingToken.tenantKey !== oauthCfg.requireTenant) {
+      log(
+        `feishu: OAuth: tenant mismatch for open_id=${ctx.senderOpenId}` +
+          ` (got=${existingToken.tenantKey}, required=${oauthCfg.requireTenant})`,
+      );
+      await sendMessageFeishu({
+        cfg,
+        to: `chat:${ctx.chatId}`,
+        text: "⚠️ Your account is not authorized to use this service.",
+        accountId: account.accountId,
+      });
+      return true;
+    }
+    // Authenticated — let normal processing continue.
+    return false;
+  }
+
+  // No valid binding — send OAuth link.
+  const callbackUrl = oauthCfg.callbackUrl;
+  if (!callbackUrl) {
+    // OAuth enabled but no public callback URL configured: log and skip gate.
+    log("feishu: OAuth enabled but oauth.callbackUrl not set; skipping auth gate");
+    return false;
+  }
+
+  const state = createOAuthPendingState({
+    accountId: account.accountId,
+    chatId: ctx.chatId,
+    senderOpenId: ctx.senderOpenId,
+  });
+
+  const authUrl = buildFeishuOAuthUrl({
+    appId: account.appId,
+    redirectUri: callbackUrl,
+    state,
+    domain: account.domain,
+  });
+
+  const displayName = ctx.senderName ?? "there";
+  const expiryDays = oauthCfg.tokenExpiryDays ?? DEFAULT_OAUTH_TOKEN_EXPIRY_DAYS;
+  const message =
+    `Hi ${displayName}! To use this service, please verify your identity first.\n\n` +
+    `[Authenticate with Feishu](${authUrl})\n\n` +
+    `_This link expires in 10 minutes. Once verified, you won't need to log in again for ${expiryDays} days._`;
+
+  await sendMessageFeishu({
+    cfg,
+    to: `chat:${ctx.chatId}`,
+    text: message,
+    accountId: account.accountId,
+  });
+
+  return true;
+}
+
+// ── Bot registration command ──────────────────────────────────────────────────
+
 const REGISTER_BOT_COMMAND = "/register-bot";
 
 /**
@@ -1256,6 +1355,21 @@ export async function handleFeishuMessage(params: {
       },
       parentPeer,
     });
+
+    // OAuth identity gate — verify DM users before forwarding to the agent.
+    if (!isGroup) {
+      const oauthCfg = feishuCfg?.oauth as FeishuOAuthConfig | undefined;
+      if (oauthCfg?.enabled) {
+        const blocked = await maybeRequireOAuthAuth({
+          oauthCfg,
+          cfg,
+          account,
+          ctx,
+          log,
+        });
+        if (blocked) return;
+      }
+    }
 
     // Self-service bot registration command (/register-bot <appId> <appSecret> [adminSecret])
     // Intercept before AI routing so credentials are never forwarded to the agent.

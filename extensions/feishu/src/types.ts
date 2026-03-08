@@ -95,3 +95,13 @@ export type UserBotRegistrationConfig = {
   workspaceTemplate?: string;
   agentDirTemplate?: string;
 };
+
+export type FeishuOAuthConfig = {
+  enabled?: boolean;
+  callbackUrl?: string;
+  callbackPort?: number;
+  callbackHost?: string;
+  callbackPath?: string;
+  tokenExpiryDays?: number;
+  requireTenant?: string;
+};

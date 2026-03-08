@@ -77,6 +77,44 @@ const DynamicAgentCreationSchema = z
   .optional();
 
 /**
+ * Feishu OAuth SSO configuration.
+ * When enabled, DM users must authenticate via Feishu OAuth before the bot processes messages.
+ * The verified identity is stored locally as a device binding (valid for `tokenExpiryDays` days).
+ */
+const FeishuOAuthSchema = z
+  .object({
+    /**
+     * Enable OAuth identity verification for DM users.
+     * Users who haven't authenticated receive an OAuth link instead of a bot response.
+     */
+    enabled: z.boolean().optional(),
+    /**
+     * Public callback URL for the OAuth redirect.
+     * Example: "https://pinoclaw.example.com/feishu/oauth/callback"
+     * Must be registered as a valid redirect URI in the Feishu app console.
+     */
+    callbackUrl: z.string().url().optional(),
+    /** Port for the local OAuth callback HTTP server. Default: 3001. */
+    callbackPort: z.number().int().positive().optional(),
+    /** Host for the local OAuth callback HTTP server. Default: "127.0.0.1". */
+    callbackHost: z.string().optional(),
+    /** URL path for the OAuth callback endpoint. Default: "/feishu/oauth/callback". */
+    callbackPath: z.string().optional(),
+    /**
+     * How many days a device binding remains valid before re-authentication is required.
+     * Default: 30.
+     */
+    tokenExpiryDays: z.number().int().positive().optional(),
+    /**
+     * If set, only allow users whose `tenant_key` matches this value.
+     * Prevents users from other tenants from authenticating.
+     */
+    requireTenant: z.string().optional(),
+  })
+  .strict()
+  .optional();
+
+/**
  * Per-user Feishu bot registration configuration.
  * When enabled, users can DM the admin bot with `/register-bot <appId> <appSecret>`
  * to self-register their own Feishu bot and get a dedicated agent workspace.
@@ -250,6 +288,8 @@ export const FeishuConfigSchema = z
     dynamicAgentCreation: DynamicAgentCreationSchema,
     // Self-service bot registration
     userBotRegistration: UserBotRegistrationSchema,
+    // OAuth SSO identity verification
+    oauth: FeishuOAuthSchema,
     // Optimization flags
     typingIndicator: z.boolean().optional().default(true),
     resolveSenderNames: z.boolean().optional().default(true),
