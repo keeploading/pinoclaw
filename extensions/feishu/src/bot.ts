@@ -37,7 +37,12 @@ import type {
   UserBotRegistrationConfig,
 } from "./types.js";
 import { registerUserBot } from "./user-bot-registration.js";
-import { loadUserOAuthToken, isUserOAuthTokenValid } from "./user-oauth-store.js";
+import {
+  deleteUserOAuthToken,
+  isUserOAuthTokenValid,
+  loadUserOAuthToken,
+} from "./user-oauth-store.js";
+import type { FeishuUserOAuthToken } from "./user-oauth-store.js";
 
 // --- Permission error extraction ---
 // Extract permission grant URL from Feishu API error response.
@@ -828,8 +833,10 @@ export function buildFeishuAgentBody(params: {
   quotedContent?: string;
   permissionErrorForAgent?: PermissionError;
   botOpenId?: string;
+  /** Verified identity from Feishu OAuth SSO. When present, injected as a system annotation. */
+  verifiedIdentity?: Pick<FeishuUserOAuthToken, "name" | "enName" | "email" | "tenantKey">;
 }): string {
-  const { ctx, quotedContent, permissionErrorForAgent, botOpenId } = params;
+  const { ctx, quotedContent, permissionErrorForAgent, botOpenId, verifiedIdentity } = params;
   let messageBody = ctx.content;
   if (quotedContent) {
     messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
@@ -857,6 +864,16 @@ export function buildFeishuAgentBody(params: {
   // Keep message_id on its own line so shared message-id hint stripping can parse it reliably.
   messageBody = `[message_id: ${ctx.messageId}]\n${messageBody}`;
 
+  if (verifiedIdentity) {
+    const parts: string[] = [];
+    const fullName = [verifiedIdentity.name, verifiedIdentity.enName].filter(Boolean).join(" / ");
+    if (fullName) parts.push(`Name: ${fullName}`);
+    if (verifiedIdentity.email) parts.push(`Email: ${verifiedIdentity.email}`);
+    if (parts.length > 0) {
+      messageBody += `\n\n[System: Verified identity — ${parts.join(", ")}]`;
+    }
+  }
+
   if (permissionErrorForAgent) {
     const grantUrl = permissionErrorForAgent.grantUrl ?? "";
     messageBody += `\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: ${grantUrl}]`;
@@ -868,8 +885,8 @@ export function buildFeishuAgentBody(params: {
 // ── Feishu OAuth auth gate ────────────────────────────────────────────────────
 
 const OAUTH_STATE_DIR_SUFFIX = "/credentials";
-const DEFAULT_OAUTH_CALLBACK_PORT = 3001;
 const DEFAULT_OAUTH_TOKEN_EXPIRY_DAYS = 30;
+const LOGOUT_COMMAND = "/logout";
 
 /**
  * Derive the credentials directory from the state dir (e.g. ~/.openclaw → ~/.openclaw/credentials).
@@ -878,9 +895,18 @@ function resolveCredentialsDir(stateDir: string): string {
   return `${stateDir}${OAUTH_STATE_DIR_SUFFIX}`;
 }
 
+type OAuthAuthResult =
+  | { blocked: true; verifiedToken?: undefined }
+  | { blocked: false; verifiedToken: FeishuUserOAuthToken | undefined };
+
 /**
  * Check whether a DM sender has a valid Feishu OAuth device binding.
- * If not, send them an auth link and return true (message handled; caller should return early).
+ *
+ * - Returns `{ blocked: false, verifiedToken }` if the user is authenticated.
+ * - Returns `{ blocked: true }` if the message was handled (auth link sent, /logout executed, etc.)
+ *   and the caller should stop further processing.
+ *
+ * Also handles the `/logout` command so users can revoke their device binding at any time.
  */
 async function maybeRequireOAuthAuth(params: {
   oauthCfg: FeishuOAuthConfig;
@@ -888,19 +914,32 @@ async function maybeRequireOAuthAuth(params: {
   account: ResolvedFeishuAccount;
   ctx: FeishuMessageContext;
   log: (...args: unknown[]) => void;
-}): Promise<boolean> {
+}): Promise<OAuthAuthResult> {
   const { oauthCfg, cfg, account, ctx, log } = params;
-  if (!oauthCfg.enabled) return false;
-  if (!account.appId || !account.configured) return false;
+  if (!oauthCfg.enabled) return { blocked: false, verifiedToken: undefined };
+  if (!account.appId || !account.configured) return { blocked: false, verifiedToken: undefined };
 
   const runtime = getFeishuRuntime();
   const stateDir = runtime.state.resolveStateDir();
   const credentialsDir = resolveCredentialsDir(stateDir);
 
+  // Handle /logout regardless of current auth state.
+  if (ctx.content.trim().toLowerCase() === LOGOUT_COMMAND) {
+    await deleteUserOAuthToken(credentialsDir, ctx.senderOpenId);
+    log(`feishu: OAuth: user logged out open_id=${ctx.senderOpenId}`);
+    await sendMessageFeishu({
+      cfg,
+      to: `chat:${ctx.chatId}`,
+      text: "✅ You've been logged out. Your device binding has been removed.",
+      accountId: account.accountId,
+    });
+    return { blocked: true };
+  }
+
   // Check existing device binding.
   const existingToken = await loadUserOAuthToken(credentialsDir, ctx.senderOpenId);
   if (existingToken && isUserOAuthTokenValid(existingToken)) {
-    // Token valid — honour requireTenant if configured.
+    // Honour requireTenant if configured.
     if (oauthCfg.requireTenant && existingToken.tenantKey !== oauthCfg.requireTenant) {
       log(
         `feishu: OAuth: tenant mismatch for open_id=${ctx.senderOpenId}` +
@@ -912,10 +951,10 @@ async function maybeRequireOAuthAuth(params: {
         text: "⚠️ Your account is not authorized to use this service.",
         accountId: account.accountId,
       });
-      return true;
+      return { blocked: true };
     }
-    // Authenticated — let normal processing continue.
-    return false;
+    // Authenticated — pass the verified token back for identity injection.
+    return { blocked: false, verifiedToken: existingToken };
   }
 
   // No valid binding — send OAuth link.
@@ -923,7 +962,7 @@ async function maybeRequireOAuthAuth(params: {
   if (!callbackUrl) {
     // OAuth enabled but no public callback URL configured: log and skip gate.
     log("feishu: OAuth enabled but oauth.callbackUrl not set; skipping auth gate");
-    return false;
+    return { blocked: false, verifiedToken: undefined };
   }
 
   const state = createOAuthPendingState({
@@ -953,7 +992,7 @@ async function maybeRequireOAuthAuth(params: {
     accountId: account.accountId,
   });
 
-  return true;
+  return { blocked: true };
 }
 
 // ── Bot registration command ──────────────────────────────────────────────────
@@ -1357,17 +1396,19 @@ export async function handleFeishuMessage(params: {
     });
 
     // OAuth identity gate — verify DM users before forwarding to the agent.
+    let oauthVerifiedToken: FeishuUserOAuthToken | undefined;
     if (!isGroup) {
       const oauthCfg = feishuCfg?.oauth as FeishuOAuthConfig | undefined;
       if (oauthCfg?.enabled) {
-        const blocked = await maybeRequireOAuthAuth({
+        const result = await maybeRequireOAuthAuth({
           oauthCfg,
           cfg,
           account,
           ctx,
           log,
         });
-        if (blocked) return;
+        if (result.blocked) return;
+        oauthVerifiedToken = result.verifiedToken;
       }
     }
 
@@ -1469,6 +1510,7 @@ export async function handleFeishuMessage(params: {
       quotedContent,
       permissionErrorForAgent,
       botOpenId,
+      verifiedIdentity: oauthVerifiedToken,
     });
     const envelopeFrom = isGroup ? `${ctx.chatId}:${ctx.senderOpenId}` : ctx.senderOpenId;
     if (permissionErrorForAgent) {
