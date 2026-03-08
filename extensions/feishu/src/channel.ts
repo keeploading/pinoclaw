@@ -133,6 +133,87 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         chunkMode: { type: "string", enum: ["length", "newline"] },
         mediaMaxMb: { type: "number", minimum: 0 },
         renderMode: { type: "string", enum: ["auto", "raw", "card"] },
+        dynamicAgentCreation: {
+          type: "object",
+          title: "Dynamic Agent Creation",
+          description: "Create a dedicated agent workspace per DM user.",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean", title: "Enable dynamic agent creation" },
+            workspaceTemplate: { type: "string", title: "Workspace path template" },
+            agentDirTemplate: { type: "string", title: "Agent dir template" },
+            maxAgents: { type: "integer", minimum: 1, title: "Max agents" },
+          },
+        },
+        userBotRegistration: {
+          type: "object",
+          title: "Self-Service Bot Registration",
+          description: "Let users register their own Feishu bot via /register-bot in DM.",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean", title: "Enable /register-bot command" },
+            adminSecret: {
+              type: "string",
+              title: "Admin secret",
+              description: "Optional passphrase users must supply to register.",
+            },
+            autoCreateAgent: {
+              type: "boolean",
+              title: "Auto-create agent workspace",
+              description: "Create a dedicated agent + binding per registered bot.",
+            },
+            workspaceTemplate: { type: "string", title: "Workspace path template" },
+            agentDirTemplate: { type: "string", title: "Agent dir template" },
+          },
+        },
+        oauth: {
+          type: "object",
+          title: "OAuth SSO Identity Verification",
+          description:
+            "Require DM users to authenticate via Feishu OAuth before the bot responds. " +
+            "Verified identity is stored locally as a device binding.",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean", title: "Enable OAuth identity gate" },
+            callbackUrl: {
+              type: "string",
+              title: "Callback URL",
+              description:
+                "Public HTTPS URL for the OAuth redirect. Must be registered in the Feishu app console. " +
+                "Example: https://pinoclaw.example.com/feishu/oauth/callback",
+            },
+            callbackPort: {
+              type: "integer",
+              minimum: 1,
+              title: "Callback server port",
+              description: "Port for the local OAuth callback HTTP server. Default: 3001.",
+            },
+            callbackHost: {
+              type: "string",
+              title: "Callback server host",
+              description: "Bind address for the local OAuth callback server. Default: 127.0.0.1.",
+            },
+            callbackPath: {
+              type: "string",
+              title: "Callback path",
+              description:
+                "URL path for the OAuth callback endpoint. Default: /feishu/oauth/callback.",
+            },
+            tokenExpiryDays: {
+              type: "integer",
+              minimum: 1,
+              title: "Device binding expiry (days)",
+              description: "How many days before the user must re-authenticate. Default: 30.",
+            },
+            requireTenant: {
+              type: "string",
+              title: "Required tenant key",
+              description:
+                "If set, only users whose tenant_key matches this value are allowed. " +
+                "Prevents users from other Feishu tenants from accessing the service.",
+            },
+          },
+        },
         accounts: {
           type: "object",
           additionalProperties: {
